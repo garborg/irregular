@@ -27,7 +27,7 @@
 (defn advance [lexer]
   (update-in lexer [:pos] inc))
 
-(defn accept-chr 
+(defn accept-chr
   ;; TODO maybe this shouldn't be called an acceptor
   "An acceptor that accepts a char chr
    Returns a new lexer if accepts or nil if it doesn't accept"
@@ -44,21 +44,21 @@
 (defn wrap-acceptor
   "Wraps an acceptor with input and output channels"
   ;; Ask zach: should this be done with partials
-  [acceptor] 
+  [acceptor]
   (fn [in-chan out-chan]
-    (async/go 
+    (async/go
       (println "inside fn inside wrap acceptor")
       (loop []
         (when-let [lexer (async/<! in-chan)]
           (when-let [result (acceptor lexer)]
             (async/>! out-chan result))
           (recur)))
-      
+
       ;; TODO: close channel here?
 )))
 
 
-(defn pipe! 
+(defn pipe!
   "Pipes two channels together"
   ;; Ask zach: does this function exist already?
   [in-chan out-chan]
@@ -69,7 +69,7 @@
         (recur)))
     ))
 
-(defn and-chain  
+(defn and-chain
   "Takes a seq of acceptors and returns an acceptor that chains them in sequence"
   ;; TODO is acceptor the right name?
   [acceptors]
@@ -85,7 +85,7 @@
           (recur (rest acceptors) new-chan out-chan))))))
 
 
-(defn or-chain [acceptors] 
+(defn or-chain [acceptors]
   "Takes a seq of acceptors and returns an acceptor that runs them in parallel"
   (fn [in-chan out-chan]
     (loop [acceptors acceptors]
@@ -134,15 +134,14 @@
   (let [in-chan (async/chan)
         out-chan (async/chan)
         _ (acceptor in-chan out-chan)]
-    (async/go 
+    (async/go
       (async/>! in-chan (new-lexer strn))
       (async/close! in-chan))
     (let [[val port]  (async/alts!! [out-chan (async/timeout 1000)])]
-      
+
       (async/close! out-chan) ;wtf
     ;; TODO: ask zach
       (print val)
       (if val
         true
         false))))
-
