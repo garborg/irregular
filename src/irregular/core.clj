@@ -12,7 +12,6 @@
 
 ;; either use a timeout or multiple out chanels
 
-
 (defrecord Lexer [input start pos])
 ;; TODO: maybe this object thing is superfluous
 
@@ -47,15 +46,12 @@
   [acceptor]
   (fn [in-chan out-chan]
     (async/go
-      (println "inside fn inside wrap acceptor")
-      (loop []
-        (when-let [lexer (async/<! in-chan)]
-          (when-let [result (acceptor lexer)]
-            (async/>! out-chan result))
-          (recur)))
+      (when-let [lexer (async/<! in-chan)]
+        (when-let [result (acceptor lexer)]
+          (async/>! out-chan result)))
+      (async/close! out-chan))))
 
-      ;; TODO: close channel here?
-)))
+
 
 (defn and-chain
   "Takes a seq of acceptors and returns an acceptor that chains them in sequence"
@@ -73,16 +69,41 @@
           (recur remaining new-chan out-chan))))))
 
 
+
+;; Acceptors
+;; in -> out -> None
+
+;; acceptors close out when they will no longer produce values
+
+
+
+(defn multiplex
+  [in n]
+  (let [outs (repeatedly n async/chan)]
+    (async/go
+      (if-let [val (async/<! in)]
+        (doseq [out outs] (async/put! out val #(async/close! out)))
+        (doseq [out outs] (async/close! out))))
+    outs))
+
 (defn or-chain
   "Takes a seq of acceptors and returns an acceptor that runs them in parallel"
   [acceptors]
+  {:pre [(not (empty? acceptors))]}
   (fn [in-chan out-chan]
-    (loop [acceptors acceptors]
-      (if (empty? acceptors)
-        (println "empty or") ;; Whats the base case
-        (do
-          ((first acceptors) in-chan out-chan)
-          (recur (rest acceptors) ))))))
+    (async/go
+      (let [ins (multiplex in-chan (count acceptors))
+            run-acceptor (fn [acceptor in]
+                           (let [out (async/chan)]
+                             (acceptor in out)
+                             out))]
+        (loop [[out & remaining :as outs] (mapv run-acceptor acceptors ins)]
+          (if (empty? outs)
+            (async/close! out-chan)
+            (do
+              (when-let [val (async/<! out)]
+                (async/>! out-chan val))
+              (recur remaining))))))))
 
 
 ;; TODO implement kleene *
@@ -121,16 +142,9 @@
   "Takes a string and an acceptor, returns whether string is accepted"
   [strn acceptor]
   (let [in-chan (async/chan)
-        out-chan (async/chan)
-        _ (acceptor in-chan out-chan)]
+        out-chan (async/chan)]
+    (acceptor in-chan out-chan)
     (async/go
       (async/>! in-chan (new-lexer strn))
       (async/close! in-chan))
-    (let [[val port]  (async/alts!! [out-chan (async/timeout 1000)])]
-
-      (async/close! out-chan) ;wtf
-    ;; TODO: ask zach
-      (print val)
-      (if val
-        true
-        false))))
+    (boolean (async/<!! out-chan))))
