@@ -1,12 +1,20 @@
 (ns irregular.core
-  (:refer-clojure :exclude [or and peek]))
+  (:refer-clojure :exclude [or and peek])
+  (:require [clojure.core.async :as async]))
 
 ;; a (chr A-Za-z0-9)
 ;; (exp|exp)
 ;; * (0+)
                                         ; (a|(bc|cd))
 
+
+;; Breaking case (runner "abbc" (and (or "ab" "abb") "c"))
+
+;; either use a timeout or multiple out chanels
+
+
 (defrecord Lexer [input start pos])
+;; TODO: maybe this object thing is superfluous
 
 (defn new-lexer
   "Wraps a string in a Lexer"
@@ -19,37 +27,76 @@
 (defn advance [lexer]
   (assoc lexer :pos (inc (:pos lexer))))
 
-(defn accept-chr [chr]
+(defn accept-chr 
+  ;; TODO maybe this shouldn't be called an acceptor
+  "An acceptor that accepts a char chr
+   Returns a new lexer if accepts or nil if it doesn't accept"
+  [chr]
   (fn [lexer]
     (if (= (peek lexer) chr)
       (advance lexer)
-      nil)))1
+      nil)))
 
-(defn or-combinator [acceptors]
-  (fn [lexer]
-    (loop [lexer lexer
-           acceptors acceptors]
-      (if (empty? acceptors) nil
-          (if-let [result ((first acceptors) lexer)]
-            result
-            (recur lexer (rest acceptors)))))))
+;; "abc" (and (or "abb" "ab) "c)
+;; >>! lexer after abb
+;; >>! lexer after "ab"
 
-(defn and-combinator [acceptors]
-  (fn [lexer]
-    (loop [lexer lexer
-           acceptors acceptors]
+(defn wrap-acceptor
+  "Wraps an acceptor with input and output channels"
+  ;; Ask zach: should this be done with partials
+  [acceptor] 
+  (fn [in-chan out-chan]
+    (async/go 
+      (println "inside fn inside wrap acceptor")
+      (loop []
+        (when-let [lexer (async/<! in-chan)]
+          (when-let [result (acceptor lexer)]
+            (async/>! out-chan result))
+          (recur)))
+      
+      ;; TODO: close channel here?
+)))
+
+
+(defn pipe! 
+  "Pipes two channels together"
+  ;; Ask zach: does this function exist already?
+  [in-chan out-chan]
+  (async/go
+    (loop []
+      (when-let [x (async/<! in-chan)]
+        (async/>! out-chan x)
+        (recur)))
+    ))
+
+(defn and-chain  
+  "Takes a seq of acceptors and returns an acceptor that chains them in sequence"
+  ;; TODO is acceptor the right name?
+  [acceptors]
+  (fn [in-chan out-chan]
+    ;; TODO should this be a loop or a recurisve
+    (loop [acceptors acceptors
+           in-chan in-chan
+           out-chan out-chan]
       (if (empty? acceptors)
-        lexer
-        (if-let [result ((first acceptors) lexer)]
-          (recur result (rest acceptors))
-          nil)))))
+        (pipe! in-chan out-chan)
+        (let [new-chan (async/chan)]
+          ((first acceptors) in-chan new-chan)
+          (recur (rest acceptors) new-chan out-chan))))))
 
-(defn star-combinator [acceptor]
-  (fn [lexer]
-    (loop [lexer lexer]
-      (if-let [result (acceptor lexer)]
-        (recur result)
-        lexer))))
+
+(defn or-chain [acceptors] 
+  "Takes a seq of acceptors and returns an acceptor that runs them in parallel"
+  (fn [in-chan out-chan]
+    (loop [acceptors acceptors]
+      (if (empty? acceptors)
+        (println "empty or") ;; Whats the base case
+        (do
+          ((first acceptors) in-chan out-chan)
+          (recur (rest acceptors) ))))))
+
+
+;; TODO implement kleene *
 
 
 
@@ -58,9 +105,10 @@
 ;; * (0+)
                                         ; (a|(bc|cd))
 
+
 (defn regex->acceptors
   [regex]
-  (and-combinator (map accept-chr regex)))
+  (and-chain (map #(wrap-acceptor (accept-chr %)) regex)))
 
 (defn parse-regex [expr]
   (if (string? expr)
@@ -70,52 +118,31 @@
 (defn parse-regexes [exprs]
   (map parse-regex exprs))
 
+
+;; Helpers to build s-expressions for regexes
+
 (defn and [& exprs]
-  (and-combinator (parse-regexes exprs)))
+  (and-chain (parse-regexes exprs)))
 
 (defn or [& exprs]
-  (or-combinator (parse-regexes exprs)))
-
-(defn star [expr]
-  (star-combinator (parse-regex expr)))
-
-#_(defn regex-builder
-    "Returns a function that takes a string and
-    returns true if regex accepts the string, false otherwise"
-    [regex]
-    (let [acceptors (regex->acceptors regex)] ; right now, regex is "a" or "b" ...
-      (fn [strn]
-        (loop [lexer (new-lexer strn)
-               acceptors acceptors]
-          (if (empty? acceptors)
-            true
-            (if-let [result ((first acceptors) lexer)]
-              (recur result (rest acceptors))
-              false))))))
-
-#_(defn ror
-    "Regular expression or helper"
-    [strn]
-    (or-combinator (map accept-chr strn)))
-
-#_(defn rand
-    "Regular expression and helper"
-    [strn]
-    (and-combinator (map accept-chr strn)))
+  (or-chain (parse-regexes exprs)))
 
 
 (defn runner
-  "Regegular expression runner"
+  "Takes a string and an acceptor, returns whether string is accepted"
   [strn acceptor]
-  (if (acceptor (new-lexer strn))
-    true
-    false))
+  (let [in-chan (async/chan)
+        out-chan (async/chan)
+        _ (acceptor in-chan out-chan)]
+    (async/go 
+      (async/>! in-chan (new-lexer strn))
+      (async/close! in-chan))
+    (let [[val port]  (async/alts!! [out-chan (async/timeout 1000)])]
+      
+      (async/close! out-chan) ;wtf
+    ;; TODO: ask zach
+      (print val)
+      (if val
+        true
+        false))))
 
-#_(def rg
-                                        ; a|(bc|cd)
-    (or-combinator [(accept-chr \a) (or-combinator [(rand "bc") (rand "cd")])]))
-
-(defn foo
-  "I don't do a whole lot."
-  [x]
-  (println x "Hello, World!"))
