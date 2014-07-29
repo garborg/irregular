@@ -73,8 +73,9 @@
           (recur remaining new-chan out-chan))))))
 
 
-(defn or-chain [acceptors]
+(defn or-chain
   "Takes a seq of acceptors and returns an acceptor that runs them in parallel"
+  [acceptors]
   (fn [in-chan out-chan]
     (loop [acceptors acceptors]
       (if (empty? acceptors)
