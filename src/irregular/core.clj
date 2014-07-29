@@ -25,7 +25,7 @@
   (get (:input lexer) (:pos lexer) nil))
 
 (defn advance [lexer]
-  (assoc lexer :pos (inc (:pos lexer))))
+  (update-in lexer [:pos] inc))
 
 (defn accept-chr 
   ;; TODO maybe this shouldn't be called an acceptor
