@@ -63,14 +63,14 @@
   [acceptors]
   (fn [in-chan out-chan]
     ;; TODO should this be a loop or a recurisve
-    (loop [acceptors acceptors
+    (loop [[acceptor & remaining] acceptors
            in-chan in-chan
            out-chan out-chan]
-      (if (empty? acceptors)
+      (if (nil? acceptor)
         (async/pipe in-chan out-chan)
         (let [new-chan (async/chan)]
-          ((first acceptors) in-chan new-chan)
-          (recur (rest acceptors) new-chan out-chan))))))
+          (acceptor in-chan new-chan)
+          (recur remaining new-chan out-chan))))))
 
 
 (defn or-chain [acceptors]
