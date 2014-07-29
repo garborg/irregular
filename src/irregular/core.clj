@@ -57,18 +57,6 @@
       ;; TODO: close channel here?
 )))
 
-
-(defn pipe!
-  "Pipes two channels together"
-  ;; Ask zach: does this function exist already?
-  [in-chan out-chan]
-  (async/go
-    (loop []
-      (when-let [x (async/<! in-chan)]
-        (async/>! out-chan x)
-        (recur)))
-    ))
-
 (defn and-chain
   "Takes a seq of acceptors and returns an acceptor that chains them in sequence"
   ;; TODO is acceptor the right name?
@@ -79,7 +67,7 @@
            in-chan in-chan
            out-chan out-chan]
       (if (empty? acceptors)
-        (pipe! in-chan out-chan)
+        (async/pipe in-chan out-chan)
         (let [new-chan (async/chan)]
           ((first acceptors) in-chan new-chan)
           (recur (rest acceptors) new-chan out-chan))))))
