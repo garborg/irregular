@@ -45,11 +45,13 @@
   ;; Ask zach: should this be done with partials
   [acceptor]
   (fn [in-chan out-chan]
-    (async/go
-      (when-let [lexer (async/<! in-chan)]
-        (when-let [result (acceptor lexer)]
-          (async/>! out-chan result)))
-      (async/close! out-chan))))
+    (async/go-loop []
+      (if-let [lexer (async/<! in-chan)]
+        (do
+          (when-let [result (acceptor lexer)]
+            (async/>! out-chan result))
+          (recur))
+        (async/close! out-chan)))))
 
 
 
@@ -75,16 +77,37 @@
 
 ;; acceptors close out when they will no longer produce values
 
-
-
+;; core.async.lab has these, but they are experimental and shit
 (defn multiplex
+  "Retuns a vector of n channels. Any write on in will be written to all of them. Closing n closes each channel"
   [in n]
   (let [outs (repeatedly n async/chan)]
-    (async/go
+    (async/go-loop []
       (if-let [val (async/<! in)]
-        (doseq [out outs] (async/put! out val #(async/close! out)))
-        (doseq [out outs] (async/close! out))))
+        (do
+          (doseq [out outs] (async/>! out val))
+          )
+        (do (doseq [out outs] (async/close! out)) (println "closing stuff"))))
     outs))
+
+(defn demultiplex
+  "Takes a (finite) seq of chans and out. Reads from any of the chans are written to out. When all the chans are closed, out is closed"
+  [chans out]
+  {:pre [(not (empty? chans))]}
+  (println chans)
+  (async/go
+    (loop [chanset (set chans)]
+      (when (not (empty? chans))
+        (let [[v c] (async/alts! (vec chanset))]
+          (if (nil? v)
+            (do (println "nilskies")
+                (recur (disj chanset c)))
+            (do
+              (println v)
+              (async/>! out v)
+              (recur chanset))
+            ))))
+    (async/close! out)))
 
 (defn or-chain
   "Takes a seq of acceptors and returns an acceptor that runs them in parallel"
@@ -96,14 +119,10 @@
             run-acceptor (fn [acceptor in]
                            (let [out (async/chan)]
                              (acceptor in out)
-                             out))]
-        (loop [[out & remaining :as outs] (mapv run-acceptor acceptors ins)]
-          (if (empty? outs)
-            (async/close! out-chan)
-            (do
-              (when-let [val (async/<! out)]
-                (async/>! out-chan val))
-              (recur remaining))))))))
+                             out))
+            outs (mapv run-acceptor acceptors ins)]
+        (demultiplex outs out-chan)
+        ))))
 
 
 ;; TODO implement kleene *
