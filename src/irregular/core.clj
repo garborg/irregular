@@ -136,7 +136,7 @@
 ;; rename these
 (defn parse-regex [expr]
   (if (string? expr)
-    (regex->acceptors expr)
+    (regex->parsers expr)
     expr))
 
 (defn parse-regexes [exprs]
