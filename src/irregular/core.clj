@@ -2,6 +2,36 @@
   (:refer-clojure :exclude [or and peek])
   (:require [clojure.core.async :as async]))
 
+
+;; core/async utils
+;;; core.async.lab has these, but they are experimental, best to write our own
+(defn multiplex
+  "Retuns a vector of n channels. Any write on in will be written to all of them. Closing n closes each channel"
+  [in n]
+  (let [outs (repeatedly n async/chan)]
+    (async/go-loop []
+      (if-let [val (async/<! in)]
+        (do
+          (doseq [out outs] (async/>! out val))
+          )
+        (do (doseq [out outs] (async/close! out)) (println "closing stuff"))))
+    outs))
+
+(defn demultiplex
+  "Takes a (finite) seq of chans and out. Reads from any of the chans are written to out. When all the chans are closed, out is closed"
+  [chans out]
+  {:pre [(not (empty? chans))]}
+  (async/go
+    (loop [chanset (set chans)]
+      (when (not (empty? chans))
+        (let [[v c] (async/alts! (vec chanset))]
+          (if (nil? v)
+            (recur (disj chanset c))
+            (do
+              (async/>! out v)
+              (recur chanset))))))
+    (async/close! out)))
+
 ;; a (chr A-Za-z0-9)
 ;; (exp|exp)
 ;; * (0+)
@@ -53,92 +83,58 @@
           (recur))
         (async/close! out-chan)))))
 
+(defn parse-empty
+  []
+  (wrap-acceptor advance))
 
+(defn parse-chr
+  [chr]
+  (wrap-acceptor (accept-chr chr)))
+
+(defn parse-string
+  [strn]
+  (and-chain (map wrap-acceptor strn)))
 
 (defn and-chain
-  "Takes a seq of acceptors and returns an acceptor that chains them in sequence"
+  "Takes a seq of parsers and returns an acceptor that chains them in sequence"
   ;; TODO is acceptor the right name?
-  [acceptors]
+  [parsers]
   (fn [in-chan out-chan]
     ;; TODO should this be a loop or a recurisve
-    (loop [[acceptor & remaining] acceptors
+    (loop [[parser & remaining] parsers
            in-chan in-chan
            out-chan out-chan]
-      (if (nil? acceptor)
+      (if (nil? parser)
         (async/pipe in-chan out-chan)
         (let [new-chan (async/chan)]
-          (acceptor in-chan new-chan)
+          (parser in-chan new-chan)
           (recur remaining new-chan out-chan))))))
 
 
-
-;; Acceptors
-;; in -> out -> None
-
-;; acceptors close out when they will no longer produce values
-
-;; core.async.lab has these, but they are experimental and shit
-(defn multiplex
-  "Retuns a vector of n channels. Any write on in will be written to all of them. Closing n closes each channel"
-  [in n]
-  (let [outs (repeatedly n async/chan)]
-    (async/go-loop []
-      (if-let [val (async/<! in)]
-        (do
-          (doseq [out outs] (async/>! out val))
-          )
-        (do (doseq [out outs] (async/close! out)) (println "closing stuff"))))
-    outs))
-
-(defn demultiplex
-  "Takes a (finite) seq of chans and out. Reads from any of the chans are written to out. When all the chans are closed, out is closed"
-  [chans out]
-  {:pre [(not (empty? chans))]}
-  (println chans)
-  (async/go
-    (loop [chanset (set chans)]
-      (when (not (empty? chans))
-        (let [[v c] (async/alts! (vec chanset))]
-          (if (nil? v)
-            (do (println "nilskies")
-                (recur (disj chanset c)))
-            (do
-              (println v)
-              (async/>! out v)
-              (recur chanset))
-            ))))
-    (async/close! out)))
-
 (defn or-chain
-  "Takes a seq of acceptors and returns an acceptor that runs them in parallel"
-  [acceptors]
-  {:pre [(not (empty? acceptors))]}
+  "Takes a seq of parsers and returns an acceptor that runs them in parallel"
+  [parsers]
+  {:pre [(not (empty? parsers))]}
   (fn [in-chan out-chan]
     (async/go
-      (let [ins (multiplex in-chan (count acceptors))
-            run-acceptor (fn [acceptor in]
+      (let [ins (multiplex in-chan (count parsers))
+            connect-parser (fn [parser in]
                            (let [out (async/chan)]
-                             (acceptor in out)
+                             (parser in out)
                              out))
-            outs (mapv run-acceptor acceptors ins)]
-        (demultiplex outs out-chan)
-        ))))
+            outs (mapv connect-parser parsers ins)]
+        (demultiplex outs out-chan)))))
 
 
-;; TODO implement kleene *
-
-
-
-;; a (chr A-Za-z0-9)
-;; (exp|exp)
-;; * (0+)
-                                        ; (a|(bc|cd))
-
-
-(defn regex->acceptors
+(defn many
+  [parser]
+  (or-chain [parse-empty]))
+                                       
+(defn regex->parsers
   [regex]
   (and-chain (map #(wrap-acceptor (accept-chr %)) regex)))
 
+;; rename these
 (defn parse-regex [expr]
   (if (string? expr)
     (regex->acceptors expr)
