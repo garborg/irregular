@@ -1,6 +1,7 @@
 (ns irregular.core
   (:refer-clojure :exclude [or and peek])
-  (:require [clojure.core.async :as async]))
+  (:require [clojure.core.async :as async])
+  (:use [midje.sweet]))
 
 
 ;; core/async utils
@@ -51,6 +52,10 @@
 
 (defn peek [lexer]
   (get (:input lexer) (:pos lexer) nil))
+
+(facts "about peek"
+  (fact "peek returns the next char"
+    (peek (new-lexer "a")) => \a))
 
 (defn advance [lexer]
   (update-in lexer [:pos] inc))
@@ -162,3 +167,25 @@
       (async/>! in-chan (new-lexer strn))
       (async/close! in-chan))
     (boolean (async/<!! out-chan))))
+
+
+(facts "about the parser"
+  (fact "can parse empty"
+    (runner "a" (parse-empty)) => true)
+  (fact "can parse a character"
+    (runner "a" (parse-chr \a)) => true
+    (runner "a" (parse-chr \b)) => false)
+  (fact "can parse an and"
+    (runner "ab" (and-chain [(parse-chr \a) (parse-chr \b)])) => true
+    (runner "aa" (and-chain [(parse-chr \a) (parse-chr \b)])) => false)
+  #_(fact "can parse an or"
+    (runner "a" (or-chain [(parse-chr \a) (parse-chr \b)])) => true
+    (runner "b" (or-chain [(parse-chr \a) (parse-chr \b)])) => true
+    (runner "c" (or-chain [(parse-chr \a) (parse-chr \b)])) => false)
+  #_(fact "can parse a many"
+    (runner "a" (many (parse-chr \a))) => true
+    (runner "aa" (many (parse-chr \a))) => true
+    (runner "aab" (and-chain [(many (parse-chr \a)) (parse-chr \b)])) => true
+    (runner "aac" (and-chain [(many (parse-chr \a)) (parse-chr \b)])) => true
+    )
+  )
