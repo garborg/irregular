@@ -11,10 +11,9 @@
   (let [outs (repeatedly n async/chan)]
     (async/go-loop []
       (if-let [val (async/<! in)]
-        (do
-          (doseq [out outs] (async/>! out val))
-          )
-        (do (doseq [out outs] (async/close! out)) (println "closing stuff"))))
+        (do (doseq [out outs] (async/>! out val))
+            (recur))
+        (doseq [out outs] (async/close! out))))
     outs))
 
 (defn demultiplex
@@ -23,7 +22,7 @@
   {:pre [(not (empty? chans))]}
   (async/go
     (loop [chanset (set chans)]
-      (when (not (empty? chans))
+      (when (not (empty? chanset))
         (let [[v c] (async/alts! (vec chanset))]
           (if (nil? v)
             (recur (disj chanset c))
