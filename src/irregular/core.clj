@@ -3,11 +3,14 @@
   (:require [clojure.core.async :as async])
   (:use [midje.sweet]))
 
+;; ## Core Async Utils
+;;; __multiplex__ and __demultiplex__ are two utility functions for core/async
+;; channels. The `core.async.lab` namespace has these, but they are experimental,
+;; and we thought it best to write our own.
 
-;; core/async utils
-;;; core.async.lab has these, but they are experimental, best to write our own
 (defn multiplex
-  "Retuns a vector of n channels. Any write on in will be written to all of them. Closing n closes each channel"
+  "__multiplex__ returns a vector of `n` channels. Any write on `in` will be written
+   to all of them. Closing `in` closes all returned channels."
   [in n]
   (let [outs (repeatedly n async/chan)]
     (async/go-loop []
@@ -18,10 +21,11 @@
     outs))
 
 (defn demultiplex
-  "Takes a (finite) seq of chans and out. Reads from any of the chans are written to out. When all the chans are closed, out is closed"
+  "__demultiplex__ takes a (finite) seq of `chans` and `out`. Reads from any of
+  the `chans` are written to `out`. When all the `chans` are closed, `out` is closed."
   [chans out]
   {:pre [(not (empty? chans))]}
-  (async/go
+  (async/go-loop
     (loop [chanset (set chans)]
       (when (not (empty? chanset))
         (let [[v c] (async/alts! (vec chanset))]
@@ -32,75 +36,80 @@
               (recur chanset))))))
     (async/close! out)))
 
-;; a (chr A-Za-z0-9)
-;; (exp|exp)
-;; * (0+)
-                                        ; (a|(bc|cd))
+;; A __ParseState__ is the object expected by a parser. It tracks cursor position.
+(defrecord ParseState
+  [input pos])
 
-
-;; Breaking case (runner "abbc" (and (or "ab" "abb") "c"))
-
-;; either use a timeout or multiple out chanels
-
-(defrecord Lexer [input start pos])
-;; TODO: maybe this object thing is superfluous
-
-(defn new-lexer
-  "Wraps a string in a Lexer"
+(defn new-parse-state
+  "__new-parse-state__ wraps a string in a ParseState."
   [strn]
-  (Lexer. strn 0 0))
+  (parse-state. strn 0))
 
-(defn peek [lexer]
-  (get (:input lexer) (:pos lexer) nil))
+(defn peek
+  "__peek__ looks ahead without changing the parse state."
+  [parse-state]
+  (get (:input parse-state) (:pos parse-state) nil))
 
-(facts "about peek"
-  (fact "peek returns the next char"
-    (peek (new-lexer "a")) => \a))
+(facts "About peek."
+  (fact "Peek returns the next char."
+    (peek (new-parse-state "a")) => \a))
 
-(defn advance [lexer]
-  (update-in lexer [:pos] inc))
+(defn advance
+  "__advance__ moves the cursor forward one character."
+  [parse-state]
+  (update-in parse-state [:pos] inc))
+
+(facts "About advance."
+  (fact "Advance moves the cursor forward one character."
+    (-> (new-parse-state "abc")
+         advance
+         :pos) => 1))
 
 (defn accept-chr
-  ;; TODO maybe this shouldn't be called an acceptor
-  "An acceptor that accepts a char chr
-   Returns a new lexer if accepts or nil if it doesn't accept"
+  "__accept-chr__ -- an acceptor that accepts a char chr
+   Returns a new parse-state if accepts or nil if it doesn't accept."
   [chr]
-  (fn [lexer]
-    (if (= (peek lexer) chr)
-      (advance lexer)
+  (fn [parse-state]
+    (if (= (peek parse-state) chr)
+      (advance parse-state)
       nil)))
 
-;; "abc" (and (or "abb" "ab) "c)
-;; >>! lexer after abb
-;; >>! lexer after "ab"
+;; ## Parsers
+;; Parsers are functions that take an input channel and an output channel.
+;; If a parser successfully parses a ParseState received on its input channel,
+;; it puts a new ParseState onto its output channel.
 
-(defn wrap-acceptor
-  "Wraps an acceptor with input and output channels"
+;; Parsers are responsible for closing their output channel when their
+;; input channel is closed.
+
+(defn acceptor->parser
+  "__acceptor->parser__ turns an Acceptor into a Parser."
   ;; Ask zach: should this be done with partials
   [acceptor]
   (fn [in-chan out-chan]
     (async/go-loop []
-      (if-let [lexer (async/<! in-chan)]
+      (if-let [parse-state (async/<! in-chan)]
         (do
-          (when-let [result (acceptor lexer)]
+          (when-let [result (acceptor parse-state)]
             (async/>! out-chan result))
           (recur))
         (async/close! out-chan)))))
 
 (defn parse-empty
+  "Parser that advances the parse state regardless of input."
   []
-  (wrap-acceptor advance))
+  (acceptor->parser advance))
 
 (defn parse-chr
   [chr]
-  (wrap-acceptor (accept-chr chr)))
+  (acceptor->parser (accept-chr chr)))
 
 (defn parse-string
   [strn]
-  (and-chain (map wrap-acceptor strn)))
+  (and-chain (map acceptor->parser strn)))
 
 (defn and-chain
-  "Takes a seq of parsers and returns an acceptor that chains them in sequence"
+  "Takes a seq of parsers and returns an acceptor that chains them in sequence."
   ;; TODO is acceptor the right name?
   [parsers]
   (fn [in-chan out-chan]
@@ -116,7 +125,7 @@
 
 
 (defn or-chain
-  "Takes a seq of parsers and returns an acceptor that runs them in parallel"
+  "Takes a seq of parsers and returns an acceptor that runs them in parallel."
   [parsers]
   {:pre [(not (empty? parsers))]}
   (fn [in-chan out-chan]
@@ -133,10 +142,10 @@
 (defn many
   [parser]
   (or-chain [parse-empty]))
-                                       
+
 (defn regex->parsers
   [regex]
-  (and-chain (map #(wrap-acceptor (accept-chr %)) regex)))
+  (and-chain (map #(acceptor->parser (accept-chr %)) regex)))
 
 ;; rename these
 (defn parse-regex [expr]
@@ -158,31 +167,31 @@
 
 
 (defn runner
-  "Takes a string and an acceptor, returns whether string is accepted"
+  "Takes a string and an acceptor, returns whether string is accepted."
   [strn acceptor]
   (let [in-chan (async/chan)
         out-chan (async/chan)]
     (acceptor in-chan out-chan)
     (async/go
-      (async/>! in-chan (new-lexer strn))
+      (async/>! in-chan (new-parse-state strn))
       (async/close! in-chan))
     (boolean (async/<!! out-chan))))
 
 
-(facts "about the parser"
-  (fact "can parse empty"
+(facts "about the parser."
+  (fact "can parse empty."
     (runner "a" (parse-empty)) => true)
-  (fact "can parse a character"
+  (fact "can parse a character."
     (runner "a" (parse-chr \a)) => true
     (runner "a" (parse-chr \b)) => false)
-  (fact "can parse an and"
+  (fact "can parse an and."
     (runner "ab" (and-chain [(parse-chr \a) (parse-chr \b)])) => true
     (runner "aa" (and-chain [(parse-chr \a) (parse-chr \b)])) => false)
-  #_(fact "can parse an or"
+  #_(fact "can parse an or."
     (runner "a" (or-chain [(parse-chr \a) (parse-chr \b)])) => true
     (runner "b" (or-chain [(parse-chr \a) (parse-chr \b)])) => true
     (runner "c" (or-chain [(parse-chr \a) (parse-chr \b)])) => false)
-  #_(fact "can parse a many"
+  #_(fact "can parse a many."
     (runner "a" (many (parse-chr \a))) => true
     (runner "aa" (many (parse-chr \a))) => true
     (runner "aab" (and-chain [(many (parse-chr \a)) (parse-chr \b)])) => true
