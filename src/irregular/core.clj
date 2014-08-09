@@ -96,24 +96,28 @@
         (async/close! out-chan)))))
 
 (defn parse-empty
-  "Parser that advances the parse state regardless of input."
+  "__parse-empty__ is a Parser that advances the ParseState regardless of input."
   []
   (acceptor->parser advance))
 
 (defn parse-chr
+  "__parse-chr__ is a Parser that accepts a given `chr`"
   [chr]
   (acceptor->parser (accept-chr chr)))
 
 (defn parse-string
+  "__parse-string__ is a Parser that accepts a given `strn`"
   [strn]
   (and-chain (map acceptor->parser strn)))
 
-(defn and-chain
-  "Takes a seq of parsers and returns an acceptor that chains them in sequence."
-  ;; TODO is acceptor the right name?
+;; ## Combinators
+;; Combinators are functions that take a seq of Parsers and return a new Parser
+;; that combines them.
+
+(defn and-combinator
+  "__and-combinator__ takes a seq of `parsers` and runs them in sequence, putting an advanced ParseState on the `out-chan` if the all succeed."
   [parsers]
   (fn [in-chan out-chan]
-    ;; TODO should this be a loop or a recurisve
     (loop [[parser & remaining] parsers
            in-chan in-chan
            out-chan out-chan]
@@ -124,8 +128,8 @@
           (recur remaining new-chan out-chan))))))
 
 
-(defn or-chain
-  "Takes a seq of parsers and returns an acceptor that runs them in parallel."
+(defn or-combinator
+  "__and-combinator__ takes a seq of `parsers` and runs them in parallel, putting an advanced ParseState on the `out-chan` if the one of them succeeds."
   [parsers]
   {:pre [(not (empty? parsers))]}
   (fn [in-chan out-chan]
@@ -141,11 +145,11 @@
 
 (defn many
   [parser]
-  (or-chain [parse-empty]))
+  (or-combinator [parse-empty]))
 
 (defn regex->parsers
   [regex]
-  (and-chain (map #(acceptor->parser (accept-chr %)) regex)))
+  (and-combinator (map #(acceptor->parser (accept-chr %)) regex)))
 
 ;; rename these
 (defn parse-regex [expr]
@@ -160,10 +164,10 @@
 ;; Helpers to build s-expressions for regexes
 
 (defn and [& exprs]
-  (and-chain (parse-regexes exprs)))
+  (and-combinator (parse-regexes exprs)))
 
 (defn or [& exprs]
-  (or-chain (parse-regexes exprs)))
+  (or-combinator (parse-regexes exprs)))
 
 
 (defn runner
@@ -185,16 +189,16 @@
     (runner "a" (parse-chr \a)) => true
     (runner "a" (parse-chr \b)) => false)
   (fact "can parse an and."
-    (runner "ab" (and-chain [(parse-chr \a) (parse-chr \b)])) => true
-    (runner "aa" (and-chain [(parse-chr \a) (parse-chr \b)])) => false)
+    (runner "ab" (and-combinator [(parse-chr \a) (parse-chr \b)])) => true
+    (runner "aa" (and-combinator [(parse-chr \a) (parse-chr \b)])) => false)
   #_(fact "can parse an or."
-    (runner "a" (or-chain [(parse-chr \a) (parse-chr \b)])) => true
-    (runner "b" (or-chain [(parse-chr \a) (parse-chr \b)])) => true
-    (runner "c" (or-chain [(parse-chr \a) (parse-chr \b)])) => false)
+    (runner "a" (or-combinator [(parse-chr \a) (parse-chr \b)])) => true
+    (runner "b" (or-combinator [(parse-chr \a) (parse-chr \b)])) => true
+    (runner "c" (or-combinator [(parse-chr \a) (parse-chr \b)])) => false)
   #_(fact "can parse a many."
     (runner "a" (many (parse-chr \a))) => true
     (runner "aa" (many (parse-chr \a))) => true
-    (runner "aab" (and-chain [(many (parse-chr \a)) (parse-chr \b)])) => true
-    (runner "aac" (and-chain [(many (parse-chr \a)) (parse-chr \b)])) => true
+    (runner "aab" (and-combinator [(many (parse-chr \a)) (parse-chr \b)])) => true
+    (runner "aac" (and-combinator [(many (parse-chr \a)) (parse-chr \b)])) => true
     )
   )
